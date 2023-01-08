@@ -26,11 +26,7 @@
 
 #pragma warning(disable : 4996)
 #pragma comment(lib, "ws2_32.lib")
-#define _WINSOCK_DEPRECATED_NO_WARNINGS
-#include <stdio.h>
-#include <string.h>
-#include <winsock2.h>
-#include <openssl/ssl.h>
+
 
 #define PORT 12345
 #define HOST "127.0.0.1"
