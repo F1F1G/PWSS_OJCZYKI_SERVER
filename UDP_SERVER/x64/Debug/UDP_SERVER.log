@@ -1,0 +1,4 @@
+﻿  UDP_SERVER.cpp
+  The contents of <filesystem> are available only with C++17 or later.
+C:\Users\filip\source\repos\UDP_SERVER\UDP_SERVER\UDP_SERVER.cpp(184,26): warning C4244: "argument": konwersja z "SOCKET" do "int", możliwa utrata danych
+  UDP_SERVER.vcxproj -> C:\Users\filip\source\repos\UDP_SERVER\x64\Debug\UDP_SERVER.exe
