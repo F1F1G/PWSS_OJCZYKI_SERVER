@@ -28,36 +28,58 @@
 #pragma comment(lib, "ws2_32.lib")
 
 
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+#include <winsock2.h>
+
 #define PORT 12345
 #define HOST "127.0.0.1"
 #define MAX_CLIENTS 5
 #define MAX_MESSAGE_LENGTH 1024
 
-using namespace std;
+char cookie_str[] = "BISCUIT!";
 
 int handleRecievedCommand(char* message, int message_length, int* seq_num, int* operation, FILE* client_file);
 
+int main(int argc, char** argv) {
 
-int main(int argc, char* argv[]) {
 	WSADATA wsa_data;
-	SOCKET server_socket;
-	struct sockaddr_in server_address;
-	SSL_CTX* ssl_context;
-	SSL* ssl;
-
 	// Inicjalizacja biblioteki WinSock
 	if (WSAStartup(MAKEWORD(2, 2), &wsa_data) != 0) {
 		fprintf(stderr, "WSAStartup failed\n");
 		return 1;
 	}
+	SSL_CTX* ssl_context;
+	SSL* ssl;
+	BIO* bio;
+	int server_socket;
+	struct sockaddr_in server_address, client_addr;
+	BIO_ADDR* client_bio_addr = BIO_ADDR_new();
+	int client_len;
 
-	// Inicjalizacja kontekstu szyfrowania SSL
+	// Tablica struktur pollfd do przekazania do funkcji poll
+	struct pollfd fds[MAX_CLIENTS + 1];
+	int num_clients = 0;
+	SSL* client_ssl[MAX_CLIENTS];
+	FILE* client_files[MAX_CLIENTS];
+	int operations[MAX_CLIENTS];
+	struct sockaddr_in client_addrs[MAX_CLIENTS];
+	int sequence_numbers[MAX_CLIENTS];
+	// Bufor na adres klienta
+	struct sockaddr_in client_address;
+	int client_address_length = sizeof(client_address);
+	// Bufor na wiadomość odebraną od klienta
+	char message[MAX_MESSAGE_LENGTH];
+	int message_length;
+	int i;
+
+
+	// Initialize SSL library
 	SSL_library_init();
 	SSL_load_error_strings();
-	ERR_load_BIO_strings();
-	OpenSSL_add_all_algorithms();
 
-	ssl_context = SSL_CTX_new(DTLS_server_method());
+	// Create SSL context
+	ssl_context = SSL_CTX_new(DTLSv1_server_method());
 	if (ssl_context == NULL) {
 		fprintf(stderr, "SSL_CTX_new failed\n");
 		WSACleanup();
@@ -79,7 +101,7 @@ int main(int argc, char* argv[]) {
 		fprintf(stderr, "Private key does not match the public certificate\n");
 		SSL_CTX_free(ssl_context);
 		WSACleanup();
-		abort();
+		exit(EXIT_FAILURE);
 	}
 
 	// Tworzenie gniazda serwera
@@ -96,6 +118,9 @@ int main(int argc, char* argv[]) {
 	server_address.sin_addr.s_addr = inet_addr(HOST);
 	server_address.sin_port = htons(PORT);
 
+	fds[0].fd = server_socket;
+	fds[0].events = POLLIN;
+
 	// Powiązanie gniazda serwera z adresem
 	if (bind(server_socket, (struct sockaddr*)&server_address, sizeof(server_address)) == SOCKET_ERROR) {
 		fprintf(stderr, "bind failed\n");
@@ -105,26 +130,12 @@ int main(int argc, char* argv[]) {
 		WSACleanup();
 		return 1;
 	}
-	// Tablica struktur pollfd do przekazania do funkcji poll
-	struct pollfd fds[MAX_CLIENTS + 1];
-	int num_clients = 0;
-	SSL* client_ssl[MAX_CLIENTS];
-	FILE* client_files[MAX_CLIENTS];
-	int operations[MAX_CLIENTS];
-	struct sockaddr_in client_addrs[MAX_CLIENTS];
-	int sequence_numbers[MAX_CLIENTS];
-	// Bufor na adres klienta
-	struct sockaddr_in client_address;
-	int client_address_length = sizeof(client_address);
-	// Bufor na wiadomość odebraną od klienta
-	char message[MAX_MESSAGE_LENGTH];
-	int message_length;
-	int i;
 
-	// Konfiguracja struktur pollfd
-	memset(fds, 0, sizeof(fds));
-	fds[0].fd = server_socket;
-	fds[0].events = POLLIN;
+
+
+
+
+
 
 	while (1) {
 		int res = WSAPoll(fds, num_clients + 1, 100) < 0;
@@ -157,9 +168,28 @@ int main(int argc, char* argv[]) {
 		}
 		// Sprawdzanie, czy dane są dostępne do odczytu
 		if (fds[0].revents & POLLIN) {
+
+			bio = BIO_new_dgram(server_socket, BIO_NOCLOSE);
+
+
+			struct timeval timeout;
+			timeout.tv_sec = 10;
+			timeout.tv_usec = 0;
+			BIO_ctrl(bio, BIO_CTRL_DGRAM_SET_RECV_TIMEOUT, 0, &timeout);
+
+
+			ssl = SSL_new(ssl_context);
+			SSL_set_bio(ssl, bio, bio);
+			SSL_set_options(ssl, SSL_OP_COOKIE_EXCHANGE);
+
+
+			struct sockaddr_storage client_addsr;
+			while (DTLSv1_listen(ssl, (BIO_ADDR*)&client_addsr) <= 0) {
+				SSL_free(ssl);
+				continue;
+			}
 			// Odbieranie wiadomości od nowego klienta
-			message_length = recvfrom(server_socket, message, sizeof(message), 0, (struct sockaddr*)&client_address, &client_address_length);
-			printf("\n\nReceived packet from %s:%d\n", inet_ntoa(client_address.sin_addr), ntohs(client_address.sin_port));
+			message_length = SSL_read(ssl, message, sizeof(message));
 			if (message_length < 0) {
 				fprintf(stderr, "recvfrom failed\n");
 				continue;
@@ -167,7 +197,7 @@ int main(int argc, char* argv[]) {
 
 			int i;
 			for (i = 0; i < num_clients; i++) {
-				if (memcmp(&client_address, &client_addrs[i], sizeof(client_address)) == 0) {
+				if (memcmp(&client_addsr, &client_addrs[i], sizeof(client_address)) == 0) {
 					break;
 				}
 			}
@@ -183,14 +213,14 @@ int main(int argc, char* argv[]) {
 					client_files[i] = fopen(file_name, "w");
 					if (client_files[i] == NULL) {
 						perror("fopen");
-						exit(1);
+						break;
 					}
 
 					client_addrs[num_clients] = client_address;
 					client_ssl[num_clients] = SSL_new(ssl_context);
 					if (client_ssl[num_clients] == NULL) {
 						printf("Error: %s", stderr);
-						exit(1);
+						break;
 					}
 					SSL_set_fd(client_ssl[num_clients], server_socket);
 					num_clients++;
@@ -230,14 +260,14 @@ int main(int argc, char* argv[]) {
 					temp[strlen(message)] = '\0';
 					sprintf(message, "%d %s", seq_num, temp);
 					seq_num++;
-					if (sendto(server_socket, message, strlen(message), 0, (struct sockaddr*)&client_address, sizeof(client_address)) != strlen(message)) {
+					if (SSL_write(ssl, message, strlen(message))) {
 						fprintf(stderr, "sendto failed\n");
 						break;
 					}
 				}
 
 				sprintf(message, "%d %s", seq_num, "_END_");
-				if (sendto(server_socket, message, strlen(message), 0, (struct sockaddr*)&client_address, sizeof(client_address)) != strlen(message)) {
+				if (SSL_write(ssl, message, strlen(message))) {
 					fprintf(stderr, "sendto failed\n");
 					break;
 				}
@@ -298,3 +328,4 @@ int handleRecievedCommand(char* message, int message_length, int* seq_num, int* 
 	return 0;
 
 }
+
