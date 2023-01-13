@@ -1,45 +1,46 @@
-#define _WINSOCK_DEPRECATED_NO_WARNINGS
-#undef UNICODE
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#define ROZMIAR 20
-#define _XOPEN_SOURCE_EXTENDED 1
-#include <iostream>
-#include <fstream>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <ws2tcpip.h>
-#include <windows.h>
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#include <iphlpapi.h>
-#include <filesystem>
-#include <stdio.h>
-#include <stdlib.h>
-#include <fcntl.h>
-#include <string>
-#include <io.h>
-#include <map>
-#include <vector>
-#include <iterator>
-
-#pragma warning(disable : 4996)
-#pragma comment(lib, "ws2_32.lib")
-
-
+﻿#define _WINSOCK_DEPRECATED_NO_WARNINGS
+#define _CRT_SECURE_NO_WARNINGS
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <winsock2.h>
+#include <srv.h>
 
 #define PORT 12345
 #define HOST "127.0.0.1"
 #define MAX_CLIENTS 5
 #define MAX_MESSAGE_LENGTH 1024
 
-char cookie_str[] = "BISCUIT!";
+#define COOKIE_LEN  20
 
 int handleRecievedCommand(char* message, int message_length, int* seq_num, int* operation, FILE* client_file);
+
+static int cookie_gen(SSL* ssl, unsigned char* cookie, unsigned int* cookie_len)
+{
+	unsigned int i;
+
+	for (i = 0; i < COOKIE_LEN; i++, cookie++) {
+		*cookie = i;
+	}
+	*cookie_len = COOKIE_LEN;
+
+	return 1;
+}
+
+static int cookie_verify(SSL* ssl, const unsigned char* cookie,
+	unsigned int cookie_len)
+{
+	unsigned int i;
+
+	if (cookie_len != COOKIE_LEN)
+		return 0;
+
+	for (i = 0; i < COOKIE_LEN; i++, cookie++) {
+		if (*cookie != i)
+			return 0;
+	}
+
+	return 1;
+}
 
 int main(int argc, char** argv) {
 
@@ -52,6 +53,7 @@ int main(int argc, char** argv) {
 	SSL_CTX* ssl_context;
 	SSL* ssl;
 	BIO* bio;
+	BIO_ADDR* peer = BIO_ADDR_new();
 	int server_socket;
 	struct sockaddr_in server_address, client_addr;
 	BIO_ADDR* client_bio_addr = BIO_ADDR_new();
@@ -104,6 +106,11 @@ int main(int argc, char** argv) {
 		exit(EXIT_FAILURE);
 	}
 
+
+	SSL_CTX_set_read_ahead(ssl_context, 1);
+	SSL_CTX_set_cookie_generate_cb(ssl_context, cookie_gen);
+	SSL_CTX_set_cookie_verify_cb(ssl_context, cookie_verify);
+
 	// Tworzenie gniazda serwera
 	server_socket = socket(AF_INET, SOCK_DGRAM, 0);
 	if (server_socket == INVALID_SOCKET) {
@@ -118,8 +125,6 @@ int main(int argc, char** argv) {
 	server_address.sin_addr.s_addr = inet_addr(HOST);
 	server_address.sin_port = htons(PORT);
 
-	fds[0].fd = server_socket;
-	fds[0].events = POLLIN;
 
 	// Powiązanie gniazda serwera z adresem
 	if (bind(server_socket, (struct sockaddr*)&server_address, sizeof(server_address)) == SOCKET_ERROR) {
@@ -131,9 +136,8 @@ int main(int argc, char** argv) {
 		return 1;
 	}
 
-
-
-
+	fds[0].fd = server_socket;
+	fds[0].events = POLLIN;
 
 
 
@@ -148,7 +152,6 @@ int main(int argc, char** argv) {
 			// Timeout expired
 			int i;
 			for (i = 1; i <= num_clients; i++) {
-				if (fds[i].revents == 0) {
 					printf("Client %d disconnected\n", i - 1);
 					SSL_shutdown(client_ssl[i - 1]);
 					SSL_free(client_ssl[i - 1]);
@@ -163,7 +166,6 @@ int main(int argc, char** argv) {
 					sequence_numbers[i - 1] = sequence_numbers[num_clients];
 					operations[i - 1] = operations[num_clients];
 					fds[i] = fds[num_clients + 1];
-				}
 			}
 		}
 		// Sprawdzanie, czy dane są dostępne do odczytu
@@ -183,11 +185,17 @@ int main(int argc, char** argv) {
 			SSL_set_options(ssl, SSL_OP_COOKIE_EXCHANGE);
 
 
-			struct sockaddr_storage client_addsr;
-			while (DTLSv1_listen(ssl, (BIO_ADDR*)&client_addsr) <= 0) {
-				SSL_free(ssl);
+			while (DTLSv1_listen(ssl, (BIO_ADDR*)&client_address) <= 0) {
 				continue;
 			}
+			int client_fd = socket(AF_INET6, SOCK_DGRAM, 0);
+			bind(client_fd, (struct sockaddr*)&server_address, sizeof(server_address));
+			connect(client_fd, (struct sockaddr*)&client_addr, sizeof(client_addr));
+
+
+			fds[1].fd = client_fd;
+			fds[1].events = POLLRDNORM;
+
 			// Odbieranie wiadomości od nowego klienta
 			message_length = SSL_read(ssl, message, sizeof(message));
 			if (message_length < 0) {
@@ -197,7 +205,7 @@ int main(int argc, char** argv) {
 
 			int i;
 			for (i = 0; i < num_clients; i++) {
-				if (memcmp(&client_addsr, &client_addrs[i], sizeof(client_address)) == 0) {
+				if (memcmp(&client_address, &client_addrs[i], sizeof(client_address)) == 0) {
 					break;
 				}
 			}
