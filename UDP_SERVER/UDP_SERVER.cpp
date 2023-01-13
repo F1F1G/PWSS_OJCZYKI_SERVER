@@ -1,4 +1,32 @@
-﻿#define _WINSOCK_DEPRECATED_NO_WARNINGS
+#define _WINSOCK_DEPRECATED_NO_WARNINGS
+#undef UNICODE
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#define ROZMIAR 20
+#define _XOPEN_SOURCE_EXTENDED 1
+#include <iostream>
+#include <fstream>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <iphlpapi.h>
+#include <filesystem>
+#include <stdio.h>
+#include <stdlib.h>
+#include <fcntl.h>
+#include <string>
+#include <io.h>
+#include <map>
+#include <vector>
+#include <iterator>
+
+#pragma warning(disable : 4996)
+#pragma comment(lib, "ws2_32.lib")
+#define _WINSOCK_DEPRECATED_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS
 #include <openssl/ssl.h>
 #include <openssl/err.h>
